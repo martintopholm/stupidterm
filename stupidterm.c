@@ -246,6 +246,35 @@ decrease_font_size(GtkWidget *widget, gpointer window)
 	adjust_font_size(widget, GTK_WINDOW(window), 1. / 1.125);
 }
 
+static void
+dump_history(GtkWidget *widget)
+{
+        GTimeVal tv;
+        gchar *timestr;
+        gchar *filename;
+        GFile *gfile;
+        GFileOutputStream *gstream;
+
+        g_get_current_time(&tv);
+        timestr = g_time_val_to_iso8601(&tv);
+        filename = g_strdup_printf("%s/st.%s", g_get_tmp_dir(), timestr);
+        gfile = g_file_new_for_path(filename);
+        g_free(timestr);
+        g_free(filename);
+
+        gstream = g_file_create(gfile, G_FILE_CREATE_PRIVATE, NULL, NULL);
+        if (gstream == NULL) {
+                g_object_unref(gfile);
+                fprintf(stderr, "Unable to open tempfile for dump.\n");
+                return;
+        }
+
+        vte_terminal_write_contents_sync((VteTerminal *)widget, G_OUTPUT_STREAM(gstream), 0, NULL, NULL);
+        g_output_stream_close(G_OUTPUT_STREAM(gstream), NULL, NULL);
+        g_object_unref(gfile);
+}
+
+
 static gboolean
 handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 {
@@ -253,6 +282,13 @@ handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 
 	g_assert(event->type == GDK_KEY_PRESS);
 
+	if (!(event->key.state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK))) {
+		switch (gdk_keyval_to_lower(event->key.keyval)) {
+		case GDK_KEY_Print:
+			dump_history(widget);
+			return TRUE;
+		}
+	}
 	if ((event->key.state & modifiers) == (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) {
 		switch (event->key.hardware_keycode) {
 		case 21: /* + on US keyboards */
@@ -267,6 +303,9 @@ handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 			vte_terminal_copy_clipboard_format(
 					(VteTerminal *)widget,
 					VTE_FORMAT_TEXT);
+			return TRUE;
+		case GDK_KEY_s:
+			dump_history(widget);
 			return TRUE;
 		case GDK_KEY_v:
 			vte_terminal_paste_clipboard((VteTerminal *)widget);
