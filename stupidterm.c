@@ -26,7 +26,34 @@
 #include <pcre2.h>
 #endif
 
+struct config {
+	gchar *config_file;
+	gchar *font;
+	gint lines;
+	gchar *role;
+	gboolean allow_bold;
+	gboolean scroll_on_output;
+	gboolean scroll_on_keystroke;
+	gboolean mouse_autohide;
+	gboolean sync_clipboard;
+	gboolean urgent_on_bell;
+	gchar **command_argv;
+#ifdef VTE_TYPE_REGEX
+	VteRegex *regex;
+#else
+	GRegex *regex;
+#endif
+	gchar *program;
+	GdkRGBA background;
+	GdkRGBA foreground;
+	GdkRGBA highlight;
+	GdkRGBA highlight_fg;
+	GdkRGBA palette[16];
+	gsize palette_size;
+};
+
 static int exit_status = EXIT_FAILURE;
+static int read_config(struct config *);
 
 static void
 screen_changed(GtkWidget *widget, GdkScreen *old_screen, gpointer userdata)
@@ -281,6 +308,66 @@ dump_history(GtkWidget *widget)
         g_object_unref(gfile);
 }
 
+static void
+reload_config(GtkWidget *widget, gpointer window)
+{
+	VteTerminal *terminal = (VteTerminal *)widget;
+	struct config conf = {};
+
+	read_config(&conf);
+
+	/* Connect to bell signal */
+	// if (conf.urgent_on_bell) {
+	// 	g_signal_connect(widget, "bell",
+	// 			G_CALLBACK(handle_bell), window);
+	// 	g_signal_connect(widget, "focus-in-event",
+	// 			G_CALLBACK(handle_focus_in), window);
+	// }
+
+	/* Sync clipboard */
+	// if (conf.sync_clipboard)
+	// 	g_signal_connect(widget, "selection-changed",
+	// 			G_CALLBACK(handle_selection_changed), NULL);
+
+	/* Set some defaults. */
+	vte_terminal_set_allow_bold(terminal, conf.allow_bold);
+	vte_terminal_set_scroll_on_output(terminal, conf.scroll_on_output);
+	vte_terminal_set_scroll_on_keystroke(terminal, conf.scroll_on_keystroke);
+	vte_terminal_set_mouse_autohide(terminal, conf.mouse_autohide);
+	vte_terminal_set_cursor_blink_mode(terminal, VTE_CURSOR_BLINK_OFF);
+	vte_terminal_set_cursor_shape(terminal, VTE_CURSOR_SHAPE_BLOCK);
+	if (conf.lines)
+		vte_terminal_set_scrollback_lines(terminal, conf.lines);
+	if (conf.palette_size) {
+		vte_terminal_set_colors(terminal,
+				&conf.foreground,
+				&conf.background,
+				conf.palette,
+				conf.palette_size - 2);
+	}
+	if (conf.highlight.alpha)
+		vte_terminal_set_color_highlight(terminal, &conf.highlight);
+	if (conf.highlight_fg.alpha)
+		vte_terminal_set_color_highlight_foreground(terminal, &conf.highlight_fg);
+	if (conf.font) {
+		PangoFontDescription *desc = pango_font_description_from_string(conf.font);
+
+		vte_terminal_set_font(terminal, desc);
+		pango_font_description_free(desc);
+		g_free(conf.font);
+	}
+	if (conf.regex) {
+#ifdef VTE_TYPE_REGEX
+		int id = vte_terminal_match_add_regex(terminal, conf.regex, 0);
+		vte_regex_unref(conf.regex);
+#else
+		int id = vte_terminal_match_add_gregex(terminal, conf.regex, 0);
+		g_regex_unref(conf.regex);
+#endif
+		vte_terminal_match_set_cursor_name(terminal, id, "pointer");
+	}
+	
+}
 
 static gboolean
 handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
@@ -306,6 +393,9 @@ handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 			return TRUE;
 		}
 		switch (gdk_keyval_to_lower(event->key.keyval)) {
+		case GDK_KEY_F1:
+			reload_config(widget, window);
+			return TRUE;
 		case GDK_KEY_c:
 			vte_terminal_copy_clipboard_format(
 					(VteTerminal *)widget,
@@ -332,32 +422,6 @@ handle_selection_changed(VteTerminal *terminal, gpointer data)
 				VTE_FORMAT_TEXT);
 	return TRUE;
 }
-
-struct config {
-	gchar *config_file;
-	gchar *font;
-	gint lines;
-	gchar *role;
-	gboolean allow_bold;
-	gboolean scroll_on_output;
-	gboolean scroll_on_keystroke;
-	gboolean mouse_autohide;
-	gboolean sync_clipboard;
-	gboolean urgent_on_bell;
-	gchar **command_argv;
-#ifdef VTE_TYPE_REGEX
-	VteRegex *regex;
-#else
-	GRegex *regex;
-#endif
-	gchar *program;
-	GdkRGBA background;
-	GdkRGBA foreground;
-	GdkRGBA highlight;
-	GdkRGBA highlight_fg;
-	GdkRGBA palette[16];
-	gsize palette_size;
-};
 
 static gboolean
 parse_color(GKeyFile *file, const gchar *filename,
@@ -542,30 +606,14 @@ parse_file(struct config *conf, GOptionEntry *options)
 	g_free(filename);
 }
 
-static void
-spawn_callback(VteTerminal *terminal, GPid pid, GError *error, gpointer data)
-{
-	GtkWidget *window = data;
-	GtkWidget *widget = GTK_WIDGET(terminal);
+int argc_saved;
+char **argv_saved;
 
-	if (pid < 0) {
-		g_printerr("%s\n", error->message);
-		g_error_free(error);
-		destroy_and_quit(window);
-		return;
-	}
-
-	g_signal_connect(widget, "child-exited", G_CALLBACK(child_exited), window);
-	g_signal_connect(window, "delete-event", G_CALLBACK(delete_event), widget);
-
-	gtk_widget_realize(widget);
-	gtk_widget_show_all(window);
-}
-
-static gboolean
-setup(int argc, char *argv[])
+static int
+read_config(struct config *conf_out)
 {
 	struct config conf = {};
+	GError *error = NULL;
 	GOptionEntry options[] = {
 		{
 			.long_name = "config",
@@ -642,13 +690,8 @@ setup(int argc, char *argv[])
 		},
 		{} /* terminator */
 	};
-	GtkWidget *window;
-	GtkWidget *widget;
-	VteTerminal *terminal;
-	GError *error = NULL;
-	gchar *startup_title;
 
-	if (!gtk_init_with_args(&argc, &argv,
+	if (!gtk_init_with_args(&argc_saved, &argv_saved,
 				"[-- COMMAND] - stupid terminal",
 				options, NULL, &error)) {
 		g_printerr("%s\n", error->message);
@@ -657,6 +700,45 @@ setup(int argc, char *argv[])
 	}
 
 	parse_file(&conf, options);
+	memcpy(conf_out, &conf, sizeof(conf));
+	return TRUE;
+}
+
+static void
+spawn_callback(VteTerminal *terminal, GPid pid, GError *error, gpointer data)
+{
+	GtkWidget *window = data;
+	GtkWidget *widget = GTK_WIDGET(terminal);
+
+	if (pid < 0) {
+		g_printerr("%s\n", error->message);
+		g_error_free(error);
+		destroy_and_quit(window);
+		return;
+	}
+
+	g_signal_connect(widget, "child-exited", G_CALLBACK(child_exited), window);
+	g_signal_connect(window, "delete-event", G_CALLBACK(delete_event), widget);
+
+	gtk_widget_realize(widget);
+	gtk_widget_show_all(window);
+}
+
+static gboolean
+setup(int argc, char *argv[])
+{
+	struct config conf = {};
+	GtkWidget *window;
+	GtkWidget *widget;
+	VteTerminal *terminal;
+	GError *error = NULL;
+	gchar *startup_title;
+
+	argc_saved = argc;
+	argv_saved = argv;
+	if (!read_config(&conf)) {
+		return FALSE;
+	}
 
 	/* Create a window to hold the scrolling shell, and hook its
 	 * delete event to the quit function.. */
