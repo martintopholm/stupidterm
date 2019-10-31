@@ -600,6 +600,7 @@ setup(int argc, char *argv[])
 	GtkWidget *widget;
 	VteTerminal *terminal;
 	GError *error = NULL;
+	gchar *startup_title;
 
 	if (!gtk_init_with_args(&argc, &argv,
 				"[-- COMMAND] - stupid terminal",
@@ -614,6 +615,9 @@ setup(int argc, char *argv[])
 	/* Create a window to hold the scrolling shell, and hook its
 	 * delete event to the quit function.. */
 	window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	startup_title = g_strjoinv(" ", conf.command_argv);
+	gtk_window_set_title(GTK_WINDOW(window), startup_title);
+	g_free(startup_title);
 
 	/* Fix transparency in GNOME/Mutter */
 	gtk_widget_set_app_paintable(window, TRUE);
