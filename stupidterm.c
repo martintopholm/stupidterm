@@ -20,6 +20,7 @@
 
 #include <stdlib.h>
 #include <vte/vte.h>
+#include <glib-unix.h>
 
 #ifdef VTE_TYPE_REGEX
 #define PCRE2_CODE_UNIT_WIDTH 8
@@ -281,7 +282,7 @@ decrease_font_size(GtkWidget *widget, gpointer window)
 }
 
 static void
-reload_config(GtkWidget *widget, gpointer window)
+reload_config(GtkWidget *widget)
 {
 	VteTerminal *terminal = (VteTerminal *)widget;
 	struct config conf = {};
@@ -342,6 +343,14 @@ reload_config(GtkWidget *widget, gpointer window)
 }
 
 static gboolean
+reload_signal(gpointer *user_data)
+{
+
+	reload_config((GtkWidget *)user_data);
+	return TRUE;
+}
+
+static gboolean
 handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 {
 	GdkModifierType modifiers = gtk_accelerator_get_default_mod_mask();
@@ -359,7 +368,7 @@ handle_key_press(GtkWidget *widget, GdkEvent *event, gpointer window)
 		}
 		switch (gdk_keyval_to_lower(event->key.keyval)) {
 		case GDK_KEY_F1:
-			reload_config(widget, window);
+			reload_config(widget);
 			return TRUE;
 		case GDK_KEY_c:
 			vte_terminal_copy_clipboard_format(
@@ -724,6 +733,9 @@ setup(int argc, char *argv[])
 	 * window's title. */
 	g_signal_connect(widget, "window-title-changed",
 			G_CALLBACK(window_title_changed), window);
+
+	/* Connect SIGHUP with reload_config */
+	g_unix_signal_add(1, G_SOURCE_FUNC(reload_signal), widget);
 
 	/* Connect to the "button-press" event. */
 	if (conf.program)
